@@ -3,29 +3,30 @@ import {MongoQueryExecutor} from '../query/MongoQueryExecutor';
 import {MongoResponseParser} from '../parsers/MongoResponseParser';
 import {QueryBuilder} from '../query/builder/QueryBuilder';
 import {IDataAPI, CollectionName, PagingInterface} from './IDataAPI';
-import {RequestHandler} from '../handler/RequestHandler';
 import { APISchema } from '../schema/APISchema';
 import {IApiRequest} from "../requests/apiRequests/IApiRequest";
 import {MembersApiRequest} from "../requests/apiRequests/impl/MembersApiRequest";
 import { AggregationApiRequest } from '../requests/apiRequests/impl/AggregationApiRequest';
 import { DrillThroughApiRequest } from '../requests/apiRequests/impl/DrillThroughApiRequest';
 import { FlatApiRequest } from '../requests/apiRequests/impl/FlatApiRequest';
+import { IRequestHandler } from '../handler/IRequestHandler';
 
 export class MongoAPIManager implements IDataAPI{
 
     private _mongoQueryManager: MongoQueryExecutor;
     private _mongoResponseParser: MongoResponseParser;
     private _queryBuilder: QueryBuilder;
-    private _dataLoader: RequestHandler;
+    private _dataLoader: IRequestHandler;
     private _mongoResultParser: MongoResponseParser;
     private _schemaCache: {[index: string]: APISchema};
     
-    constructor() {
+    constructor(requestHandler: IRequestHandler) {
         this._mongoQueryManager = new MongoQueryExecutor();
-        this._mongoResponseParser = new MongoResponseParser();
-        this._mongoResultParser = new MongoResponseParser();
+        this._mongoResponseParser = MongoResponseParser.getInstance();
+        this._mongoResultParser = MongoResponseParser.getInstance();
         this._queryBuilder = QueryBuilder.getInstance();
-        this._dataLoader = new RequestHandler(this._queryBuilder, this._mongoQueryManager, this._mongoResultParser);
+        this._dataLoader = requestHandler;
+        this._dataLoader.init(this._queryBuilder, this._mongoQueryManager, this._mongoResultParser);
         this._schemaCache = {};
     }
 
@@ -54,10 +55,12 @@ export class MongoAPIManager implements IDataAPI{
      * @return {object}
      */
     public async getMembers(dbo: Db, index: CollectionName, fieldObject: any, pagingObject: PagingInterface): Promise<any> {
-        let apiRequest: IApiRequest = (pagingObject.pageToken != null && this._dataLoader.isRequestRegistered(pagingObject.pageToken))
-            ? this._dataLoader.getRegisteredRequest(pagingObject.pageToken) 
+        this._dataLoader.injectDb(dbo);
+
+        let apiRequest: IApiRequest = (pagingObject.pageToken != null && await Promise.resolve(this._dataLoader.isRequestRegistered(pagingObject.pageToken)))
+            ? await Promise.resolve(this._dataLoader.getRegisteredRequest(pagingObject.pageToken))
             : new MembersApiRequest({index: index, fieldObject: fieldObject})
-        return this._dataLoader.loadData(dbo, this.getIndexSchema(index), apiRequest, pagingObject);
+        return this._dataLoader.loadData(dbo, await this.getIndexSchema(dbo, index), apiRequest, pagingObject);
     }
 
     /**
@@ -71,32 +74,40 @@ export class MongoAPIManager implements IDataAPI{
     public async getSelectResult(dbo: Db, index: CollectionName, query: any, pagingObject: PagingInterface) {
 
         let response = null;
+        const schema = await this.getIndexSchema(dbo, index);
+        this._dataLoader.injectDb(dbo);
 
         if (query["aggs"] != null && query["fields"] == null) {
 
-            let apiRequest: IApiRequest = (pagingObject.pageToken != null && this._dataLoader.isRequestRegistered(pagingObject.pageToken))
-                ? this._dataLoader.getRegisteredRequest(pagingObject.pageToken) 
+            let apiRequest: IApiRequest = (pagingObject.pageToken != null && await Promise.resolve(this._dataLoader.isRequestRegistered(pagingObject.pageToken)))
+                ? await Promise.resolve(this._dataLoader.getRegisteredRequest(pagingObject.pageToken))
                 : new AggregationApiRequest({index: index, query: query});
-            response = this._dataLoader.loadData(dbo, this.getIndexSchema(index), apiRequest, pagingObject);
+            response = this._dataLoader.loadData(dbo, schema, apiRequest, pagingObject);
 
         } else if (query["aggs"] == null && query["fields"] != null) {//drill-through
 
-            let apiRequest: IApiRequest = (pagingObject.pageToken != null && this._dataLoader.isRequestRegistered(pagingObject.pageToken))
-                ? this._dataLoader.getRegisteredRequest(pagingObject.pageToken) 
+            let apiRequest: IApiRequest = (pagingObject.pageToken != null && await Promise.resolve(this._dataLoader.isRequestRegistered(pagingObject.pageToken)))
+                ? await Promise.resolve(this._dataLoader.getRegisteredRequest(pagingObject.pageToken))
                 : new DrillThroughApiRequest({index: index, query: query})
-            response = this._dataLoader.loadData(dbo, this.getIndexSchema(index), apiRequest, pagingObject);
+            response = this._dataLoader.loadData(dbo, schema, apiRequest, pagingObject);
         } else if (query["aggs"] != null && query["fields"] != null) {// flat-form
 
-            let apiRequest: IApiRequest = (pagingObject.pageToken != null && this._dataLoader.isRequestRegistered(pagingObject.pageToken))
-                ? this._dataLoader.getRegisteredRequest(pagingObject.pageToken) 
+            let apiRequest: IApiRequest = (pagingObject.pageToken != null && await Promise.resolve(this._dataLoader.isRequestRegistered(pagingObject.pageToken)))
+                ? await Promise.resolve(this._dataLoader.getRegisteredRequest(pagingObject.pageToken))
                 : new FlatApiRequest({index: index, query: query})
-            response = this._dataLoader.loadData(dbo, this.getIndexSchema(index), apiRequest, pagingObject);
+            response = this._dataLoader.loadData(dbo, schema, apiRequest, pagingObject);
         }
 
         return response;
     }
 
-    private getIndexSchema(index: string): APISchema {
+    private async getIndexSchema(dbo: Db, index: string): Promise<APISchema> {
+        if (typeof index != 'string') throw new Error("Incorrect index format");
+        this._mongoQueryManager.injectDBConnection(dbo);
+        if (this._schemaCache[index] == null) {
+            let document: any = await this._mongoQueryManager.runShemaQuery(index);
+            this._schemaCache[index] = this._mongoResponseParser.parseShemaFromDocument(document);
+        }
         return this._schemaCache[index];
     }
 }

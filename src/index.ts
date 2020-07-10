@@ -1,6 +1,7 @@
 import {Db} from 'mongodb';
 import {CollectionName, IDataAPI, PagingInterface} from './api/IDataAPI';
 import {MongoAPIManager} from './api/MongoAPIManager';
+import { IRequestHandler } from './handler/IRequestHandler';
 
 export class MongoDataAPI {
 
@@ -8,8 +9,8 @@ export class MongoDataAPI {
 
     public readonly API_VERSION: string = "2.8.5";
 
-    constructor() {
-        this._mongoAPIManager = new MongoAPIManager();
+    constructor(requestHandler: IRequestHandler) {
+        this._mongoAPIManager = new MongoAPIManager(requestHandler);
     }
 
     /**
